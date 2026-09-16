@@ -140,6 +140,7 @@ function sgvEntries(
         sgv: normalizeSgToMgdl(sgv.sg, data),
         date: timestamp,
         dateString: timestampAsString(timestamp),
+        utcOffset: offsetMilliseconds / 60000,
         device: deviceName(data),
       };
     });
