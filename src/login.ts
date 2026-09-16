@@ -471,6 +471,7 @@ export async function login(isUS: boolean, username?: string, password?: string)
     code_verifier: codeVerifier,
   }), {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+     validateStatus: () => true,
   });
 
   if (tokenResp.status !== 200) {
