@@ -34,7 +34,7 @@ function readEnvInt(key: string, defaultVal: number): number {
 }
 
 export function loadConfig(): Config {
-  console.log('DEBUG PASSWORD:', process.env['CARELINK_PASSWORD'] !== undefined, 'length:', process.env['CARELINK_PASSWORD']?.length ?? 0);
+console.log('DEBUG ENV:', 'USERNAME', !!process.env['CARELINK_USERNAME'], 'PASSWORD', !!process.env['CARELINK_PASSWORD'], 'API_SECRET', !!process.env['API_SECRET'], 'NS', !!process.env['NS'], 'SERVER', !!process.env['MMCONNECT_SERVER']);
   const username = readEnvString('CARELINK_USERNAME');
   const password = readEnvString('CARELINK_PASSWORD');
   const nsSecret = readEnvString('API_SECRET');
