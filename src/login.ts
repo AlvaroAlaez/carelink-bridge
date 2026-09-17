@@ -14,7 +14,7 @@ import { DISCOVERY_APP_VERSION, buildDiscoveryUrl } from './discovery.js';
 import * as logger from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const LOGINDATA_FILE = path.join(__dirname, '..', 'logindata.json');
+export const LOGINDATA_FILE = path.join(__dirname, '..', 'data', 'logindata.json');
 
 
 function toBase64Url(buf: Buffer): string {
