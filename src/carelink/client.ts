@@ -49,7 +49,7 @@ export class CareLinkClient {
       options.serverName || process.env['MMCONNECT_SERVERNAME'],
     );
     this.urls = buildUrls(this.serverName, countryCode, lang);
-    this.loginDataPath = path.join(__dirname, '..', '..', 'logindata.json');
+    this.loginDataPath = path.join(__dirname, '..', '..', 'data', 'logindata.json');
     this.circuitBreaker = new CircuitBreaker(
       options.circuitThreshold ?? DEFAULT_CIRCUIT_THRESHOLD,
       options.circuitCooldownMs ?? DEFAULT_CIRCUIT_COOLDOWN_MS,
