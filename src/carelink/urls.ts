@@ -3,6 +3,7 @@ const DEFAULT_SERVER_US = 'carelink.minimed.com';
 
 export interface CareLinkUrls {
   me: string;
+  profile: string;
   countrySettings: string;
   connectData: (timestamp: number) => string;
   monitorData: string;
@@ -26,6 +27,7 @@ export function buildUrls(
 ): CareLinkUrls {
   return {
     me: `https://${serverName}/patient/users/me`,
+    profile: `https://${serverName}/patient/users/me/profile`,
     countrySettings: `https://${serverName}/patient/countries/settings?countryCode=${countryCode}&language=${lang}`,
     connectData: (timestamp: number) =>
       `https://${serverName}/patient/connect/data?cpSerialNumber=NONE&msgType=last24hours&requestTime=${timestamp}`,
