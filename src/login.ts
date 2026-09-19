@@ -129,6 +129,27 @@ function htmlTitle(html: string): string | undefined {
   return m?.[1]?.trim().slice(0, 120);
 }
 
+function formInputSummary(html: string): Array<{ name: string; type: string }> {
+  const out: Array<{ name: string; type: string }> = [];
+  const inputRegex = /<input\b[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = inputRegex.exec(html)) !== null) {
+    const tag = m[0];
+    const name = tag.match(/\bname=["']([^"']+)["']/i)?.[1];
+    if (!name) continue;
+    const type = tag.match(/\btype=["']([^"']+)["']/i)?.[1] || 'text';
+    if (!out.some(x => x.name === name && x.type === type)) {
+      out.push({ name, type });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+function formMethod(html: string): string | undefined {
+  const form = html.match(/<form\b[^>]*>/i)?.[0];
+  return form?.match(/\bmethod=["']([^"']+)["']/i)?.[1]?.toUpperCase();
+}
+
 async function loginAutomated(
   username: string,
   password: string,
@@ -236,6 +257,8 @@ async function loginAutomated(
     htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
     hasForm: typeof resp.data === 'string' && /<form\b/i.test(resp.data),
     hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
+    formMethod: typeof resp.data === 'string' ? formMethod(resp.data) : undefined,
+    inputFields: typeof resp.data === 'string' ? formInputSummary(resp.data) : undefined,
   });
 
   if (resp.status === 200 && typeof resp.data === 'string') {
@@ -286,6 +309,8 @@ async function loginAutomated(
       htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
       hasForm: typeof resp.data === 'string' && /<form\b/i.test(resp.data),
       hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
+      formMethod: typeof resp.data === 'string' ? formMethod(resp.data) : undefined,
+      inputFields: typeof resp.data === 'string' ? formInputSummary(resp.data) : undefined,
     });
     throw new Error('Could not extract authorization code from redirect chain');
   }
