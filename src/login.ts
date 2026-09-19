@@ -113,6 +113,86 @@ async function resolveAuth0Config(isUS: boolean): Promise<{ ssoConfig: Auth0SSOC
 // ---------------------------------------------------------------------------
 // Strategy 1: Automated login — POST credentials directly to Auth0
 // ---------------------------------------------------------------------------
+function safeUrlForLog(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    return u.origin + u.pathname;
+  } catch {
+    // Relative paths only; never log query/fragment because they may contain auth codes/state.
+    return raw.split(/[?#]/, 1)[0];
+  }
+}
+
+function htmlTitle(html: string): string | undefined {
+  const m = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+  return m?.[1]?.trim().slice(0, 120);
+}
+
+function formInputSummary(html: string): Array<{ name: string; type: string }> {
+  const out: Array<{ name: string; type: string }> = [];
+  const inputRegex = /<input\b[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = inputRegex.exec(html)) !== null) {
+    const tag = m[0];
+    const name = tag.match(/\bname=["']([^"']+)["']/i)?.[1];
+    if (!name) continue;
+    const type = tag.match(/\btype=["']([^"']+)["']/i)?.[1] || 'text';
+    if (!out.some(x => x.name === name && x.type === type)) {
+      out.push({ name, type });
+    }
+  }
+  return out.slice(0, 20);
+}
+
+function formMethod(html: string): string | undefined {
+  const form = html.match(/<form\b[^>]*>/i)?.[0];
+  return form?.match(/\bmethod=["']([^"']+)["']/i)?.[1]?.toUpperCase();
+}
+
+function visibleErrorSummary(html: string): string[] {
+  const candidates: string[] = [];
+  const patterns = [
+    /<[^>]+role=["']alert["'][^>]*>([\s\S]*?)<\/[^>]+>/gi,
+    /<[^>]+class=["'][^"']*(?:error|alert|invalid)[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(html)) !== null) {
+      const text = m[1]
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&#39;/gi, "'")
+        .replace(/&quot;/gi, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (text && text.length <= 300 && !candidates.includes(text)) candidates.push(text);
+      if (candidates.length >= 5) break;
+    }
+    if (candidates.length >= 5) break;
+  }
+  return candidates;
+}
+
+function safeFormDiagnostics(html: string): Record<string, unknown> {
+  const captchaInput = html.match(/<input\b[^>]*\bname=["']captcha["'][^>]*>/i)?.[0]
+    || html.match(/<input\b[^>]*\btype=["']hidden["'][^>]*\bname=["']captcha["'][^>]*>/i)?.[0];
+  const captchaValue = captchaInput?.match(/\bvalue=["']([^"']*)["']/i)?.[1];
+
+  return {
+    captchaFieldPresent: !!captchaInput,
+    captchaHasValue: typeof captchaValue === 'string' && captchaValue.length > 0,
+    mentionsWrongCredentials: /wrong username|wrong password|wrong-credentials|invalid username|invalid password/i.test(html),
+    mentionsCaptchaChallenge: /captcha required|verify you are human|recaptcha|hcaptcha|arkose|challenge-platform/i.test(html),
+    mentionsGenericError: /class=["'][^"']*error[^"']*["']|role=["']alert["']/i.test(html),
+    visibleErrors: visibleErrorSummary(html),
+  };
+}
+
 async function loginAutomated(
   username: string,
   password: string,
@@ -212,12 +292,35 @@ async function loginAutomated(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   });
 
-  if (resp.status === 200 && typeof resp.data === 'string') {
-    if (resp.data.includes('Wrong username or password') || resp.data.includes('wrong-credentials')) {
+  logger.info('Automated login credential response', {
+    component: 'login',
+    status: resp.status,
+    location: safeUrlForLog(resp.headers['location']),
+    contentType: String(resp.headers['content-type'] || ''),
+    htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
+    hasForm: typeof resp.data === 'string' && /<form\b/i.test(resp.data),
+    hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
+    formMethod: typeof resp.data === 'string' ? formMethod(resp.data) : undefined,
+    inputFields: typeof resp.data === 'string' ? formInputSummary(resp.data) : undefined,
+    ...(typeof resp.data === 'string' ? safeFormDiagnostics(resp.data) : {}),
+  });
+
+  if (typeof resp.data === 'string') {
+    const visibleErrors = visibleErrorSummary(resp.data);
+    const explicitCredentialError = visibleErrors.some(t =>
+      /wrong username|wrong password|invalid username|invalid password|incorrect username|incorrect password/i.test(t),
+    );
+    if (explicitCredentialError) {
       throw new Error('Invalid username or password');
     }
-    if (resp.data.includes('captcha') || resp.data.includes('CAPTCHA') || resp.data.includes('arkose')) {
-      throw new Error('CAPTCHA required');
+
+    const explicitCaptchaError = visibleErrors.some(t =>
+      /captcha|verify you are human|recaptcha|hcaptcha|arkose|challenge/i.test(t),
+    );
+    const returnedLoginForm = /<form\b/i.test(resp.data) && /name=["']username["']/i.test(resp.data);
+
+    if (explicitCaptchaError || (resp.status === 400 && returnedLoginForm)) {
+      throw new Error('Interactive login challenge required');
     }
   }
   if (resp.status === 401 || resp.status === 403) {
@@ -228,6 +331,14 @@ async function loginAutomated(
   let code: string | undefined;
   for (let i = 0; i < 15; i++) {
     const location = resp.headers['location'] || '';
+    logger.info('Automated login redirect step', {
+      component: 'login',
+      step: i + 1,
+      status: resp.status,
+      location: safeUrlForLog(location),
+      contentType: String(resp.headers['content-type'] || ''),
+      htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
+    });
     const codeMatch = location.match(/[?&]code=([^&]+)/);
     if (codeMatch) { code = codeMatch[1]; break; }
 
@@ -244,6 +355,18 @@ async function loginAutomated(
   }
 
   if (!code) {
+    logger.warn('Automated login ended without authorization code', {
+      component: 'login',
+      status: resp.status,
+      location: safeUrlForLog(resp.headers['location']),
+      contentType: String(resp.headers['content-type'] || ''),
+      htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
+      hasForm: typeof resp.data === 'string' && /<form\b/i.test(resp.data),
+      hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
+      formMethod: typeof resp.data === 'string' ? formMethod(resp.data) : undefined,
+      inputFields: typeof resp.data === 'string' ? formInputSummary(resp.data) : undefined,
+      ...(typeof resp.data === 'string' ? safeFormDiagnostics(resp.data) : {}),
+    });
     throw new Error('Could not extract authorization code from redirect chain');
   }
 
@@ -421,7 +544,12 @@ async function loginViaTerminal(
 // ---------------------------------------------------------------------------
 // Main login entry point
 // ---------------------------------------------------------------------------
-export async function login(isUS: boolean, username?: string, password?: string): Promise<LoginData> {
+export async function login(
+  isUS: boolean,
+  username?: string,
+  password?: string,
+  allowInteractiveFallback = true,
+): Promise<LoginData> {
   const { ssoConfig, baseUrl } = await resolveAuth0Config(isUS);
   const client = ssoConfig.client;
 
@@ -439,13 +567,22 @@ export async function login(isUS: boolean, username?: string, password?: string)
     } catch (err) {
       const msg = (err as Error).message;
       if (msg.includes('Invalid username or password')) throw err;
-      if (msg.includes('CAPTCHA')) {
-        logger.warn('CAPTCHA detected — opening browser', { component: 'login' });
+
+      if (!allowInteractiveFallback) {
+        throw new Error('Automated CareLink re-login failed: ' + msg);
+      }
+
+      if (msg.includes('Interactive login challenge') || msg.includes('CAPTCHA')) {
+        logger.warn('Interactive CareLink login challenge detected — opening browser', { component: 'login' });
       } else {
         logger.warn('Automated login failed', { component: 'login', error: msg });
         logger.info('Falling back to browser...', { component: 'login' });
       }
     }
+  }
+
+  if (!authCode && !allowInteractiveFallback) {
+    throw new Error('Automated CareLink re-login could not obtain an authorization code');
   }
 
   // Strategy 2: Browser window (puppeteer-core)

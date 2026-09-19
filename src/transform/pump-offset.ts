@@ -33,8 +33,27 @@ export function guessPumpOffset(data: CareLinkData): string {
 }
 
 export function guessPumpOffsetMilliseconds(data: CareLinkData): number {
-  const pumpTimeAsIfUTC = Date.parse(data.sMedicalDeviceTime);
+  // v13 patientData responses can omit sMedicalDeviceTime. In that case,
+  // infer the pump clock from the most recent SG timestamp; if that is also
+  // unavailable, fall back to zero offset rather than returning NaN and
+  // dropping every SGV in the recency filter.
+  const pumpClock =
+    data.sMedicalDeviceTime ||
+    data.lastSG?.datetime ||
+    data.sgs?.[data.sgs.length - 1]?.datetime;
+
+  const pumpTimeAsIfUTC = pumpClock ? Date.parse(pumpClock) : NaN;
   const serverTimeUTC = data.currentServerTime;
+
+  if (!Number.isFinite(pumpTimeAsIfUTC) || !Number.isFinite(serverTimeUTC)) {
+    logger.warn('Unable to infer pump timezone; using zero offset', {
+      component: 'transform',
+      hasPumpClock: !!pumpClock,
+      hasServerTime: Number.isFinite(serverTimeUTC),
+    });
+    return 0;
+  }
+
   const raw = pumpTimeAsIfUTC - serverTimeUTC;
   return Math.round(raw / QUARTER_HOUR_MS) * QUARTER_HOUR_MS;
 }

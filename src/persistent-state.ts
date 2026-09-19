@@ -6,6 +6,7 @@
  *   - consecutiveFailures + circuitOpenUntil (for the circuit breaker)
  *   - lastRefreshTokenUse (when the OAuth refresh token was last used)
  *   - nextScheduledRefresh (proactive refresh target, exp minus margin)
+ *   - lastAutoReloginAt (rate-limits automatic re-login across restarts)
  *
  * Security: same posture as logindata.json — atomic write via O_CREAT|O_EXCL
  * sibling + rename, mode 0600 at creation, refuse symlinks. The state holds
@@ -26,6 +27,7 @@ export interface PersistentState {
   circuitOpenUntil: number;
   lastRefreshTokenUse: number | null;
   nextScheduledRefresh: number | null;
+  lastAutoReloginAt?: number | null;
 }
 
 export function defaultState(): PersistentState {
@@ -36,6 +38,7 @@ export function defaultState(): PersistentState {
     circuitOpenUntil: 0,
     lastRefreshTokenUse: null,
     nextScheduledRefresh: null,
+    lastAutoReloginAt: null,
   };
 }
 
@@ -60,6 +63,11 @@ function isValidState(data: unknown): data is PersistentState {
   if (typeof d['circuitOpenUntil'] !== 'number') return false;
   if (d['lastRefreshTokenUse'] !== null && typeof d['lastRefreshTokenUse'] !== 'number') return false;
   if (d['nextScheduledRefresh'] !== null && typeof d['nextScheduledRefresh'] !== 'number') return false;
+  if (
+    d['lastAutoReloginAt'] !== undefined &&
+    d['lastAutoReloginAt'] !== null &&
+    typeof d['lastAutoReloginAt'] !== 'number'
+  ) return false;
   return true;
 }
 

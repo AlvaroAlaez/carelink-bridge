@@ -67,6 +67,8 @@ console.log('DEBUG ENV:', 'USERNAME', !!process.env['CARELINK_USERNAME'], 'PASSW
     stateFile: readEnvString('CARELINK_STATE_FILE'),
     circuitThreshold: readEnvInt('CARELINK_CIRCUIT_THRESHOLD', 5),
     circuitCooldownMs: readEnvInt('CARELINK_CIRCUIT_COOLDOWN_S', 60) * 1000,
+    autoRelogin: readEnvBool('CARELINK_AUTO_RELOGIN', false),
+    autoReloginCooldownMs: readEnvInt('CARELINK_AUTO_RELOGIN_COOLDOWN_MINUTES', 360) * 60 * 1000,
     metricsPort: readEnvInt('CARELINK_METRICS_PORT', 0),
   };
 }
