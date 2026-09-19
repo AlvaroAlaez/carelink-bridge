@@ -306,11 +306,21 @@ async function loginAutomated(
   });
 
   if (typeof resp.data === 'string') {
-    if (/Wrong username or password|wrong-credentials|invalid username|invalid password/i.test(resp.data)) {
+    const visibleErrors = visibleErrorSummary(resp.data);
+    const explicitCredentialError = visibleErrors.some(t =>
+      /wrong username|wrong password|invalid username|invalid password|incorrect username|incorrect password/i.test(t),
+    );
+    if (explicitCredentialError) {
       throw new Error('Invalid username or password');
     }
-    if (/captcha required|verify you are human|recaptcha|hcaptcha|arkose|challenge-platform/i.test(resp.data)) {
-      throw new Error('CAPTCHA required');
+
+    const explicitCaptchaError = visibleErrors.some(t =>
+      /captcha|verify you are human|recaptcha|hcaptcha|arkose|challenge/i.test(t),
+    );
+    const returnedLoginForm = /<form\b/i.test(resp.data) && /name=["']username["']/i.test(resp.data);
+
+    if (explicitCaptchaError || (resp.status === 400 && returnedLoginForm)) {
+      throw new Error('Interactive login challenge required');
     }
   }
   if (resp.status === 401 || resp.status === 403) {
@@ -562,8 +572,8 @@ export async function login(
         throw new Error('Automated CareLink re-login failed: ' + msg);
       }
 
-      if (msg.includes('CAPTCHA')) {
-        logger.warn('CAPTCHA detected — opening browser', { component: 'login' });
+      if (msg.includes('Interactive login challenge') || msg.includes('CAPTCHA')) {
+        logger.warn('Interactive CareLink login challenge detected — opening browser', { component: 'login' });
       } else {
         logger.warn('Automated login failed', { component: 'login', error: msg });
         logger.info('Falling back to browser...', { component: 'login' });
