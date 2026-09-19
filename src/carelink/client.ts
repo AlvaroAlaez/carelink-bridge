@@ -448,6 +448,13 @@ export class CareLinkClient {
 
           if (resp.data && resp.status === 200) {
             logger.log('GET data (BLE)', preferredV13);
+
+            const wrapped = resp.data as CareLinkData & { patientData?: CareLinkData };
+            if (wrapped.patientData && typeof wrapped.patientData === 'object') {
+              logger.log('Unwrapping BLE v13 patientData payload');
+              return wrapped.patientData;
+            }
+
             return resp.data;
           }
 
