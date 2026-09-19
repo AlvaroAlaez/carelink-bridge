@@ -43,9 +43,12 @@ const client = new CareLinkClient({
   lang: config.language,
   circuitThreshold: config.circuitThreshold,
   circuitCooldownMs: config.circuitCooldownMs,
+  autoRelogin: config.autoRelogin,
+  autoReloginCooldownMs: config.autoReloginCooldownMs,
 });
 client.restoreCircuitState(persisted);
 client.setRefreshTracking(persisted.lastRefreshTokenUse, persisted.nextScheduledRefresh);
+client.setAutoReloginTracking(persisted.lastAutoReloginAt ?? null);
 
 const baseUrl = config.nsBaseUrl || ('https://' + config.nsHost);
 const entriesUrl = baseUrl + '/api/v1/entries.json';
@@ -69,6 +72,7 @@ function persistState(): void {
       circuitOpenUntil: client.getCircuitOpenUntil(),
       lastRefreshTokenUse: client.getLastRefreshAt(),
       nextScheduledRefresh: client.getNextScheduledRefresh(),
+      lastAutoReloginAt: client.getLastAutoReloginAt(),
     });
   } catch (err) {
     // State is best-effort — a disk failure here must never break the loop.
@@ -267,6 +271,11 @@ try {
   await ensureLogin();
   logger.info(`Starting — interval set to ${config.interval / 1000}s`, { component: 'bridge', intervalMs: config.interval });
   logger.info(`Stale threshold: ${config.staleThresholdMs / 60000} min${config.staleWebhookUrl ? ' (webhook enabled)' : ''}`, { component: 'bridge', staleThresholdMs: config.staleThresholdMs });
+  logger.info(
+    `Automatic re-login: ${config.autoRelogin ? 'enabled' : 'disabled'}` +
+    ` (cooldown ${Math.round(config.autoReloginCooldownMs / 60000)} min)`,
+    { component: 'bridge' },
+  );
   logger.info('Fetching data now...', { component: 'bridge' });
 
   const loopPromise = requestLoop();
