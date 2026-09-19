@@ -18,6 +18,10 @@ export interface Config {
   stateFile?: string;
   circuitThreshold: number;
   circuitCooldownMs: number;
+  /** Opt-in because a CareLink re-login may invalidate a CareLink Connect mobile session. */
+  autoRelogin: boolean;
+  /** Minimum interval between automatic re-login attempts. */
+  autoReloginCooldownMs: number;
   /** 0 = disabled (default, no inbound port). >0 = loopback-only /healthz + /metrics. */
   metricsPort: number;
 }
