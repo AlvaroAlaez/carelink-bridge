@@ -113,6 +113,22 @@ async function resolveAuth0Config(isUS: boolean): Promise<{ ssoConfig: Auth0SSOC
 // ---------------------------------------------------------------------------
 // Strategy 1: Automated login — POST credentials directly to Auth0
 // ---------------------------------------------------------------------------
+function safeUrlForLog(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    return u.origin + u.pathname;
+  } catch {
+    // Relative paths only; never log query/fragment because they may contain auth codes/state.
+    return raw.split(/[?#]/, 1)[0];
+  }
+}
+
+function htmlTitle(html: string): string | undefined {
+  const m = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+  return m?.[1]?.trim().slice(0, 120);
+}
+
 async function loginAutomated(
   username: string,
   password: string,
@@ -212,6 +228,16 @@ async function loginAutomated(
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   });
 
+  logger.info('Automated login credential response', {
+    component: 'login',
+    status: resp.status,
+    location: safeUrlForLog(resp.headers['location']),
+    contentType: String(resp.headers['content-type'] || ''),
+    htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
+    hasForm: typeof resp.data === 'string' && /<form\b/i.test(resp.data),
+    hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
+  });
+
   if (resp.status === 200 && typeof resp.data === 'string') {
     if (resp.data.includes('Wrong username or password') || resp.data.includes('wrong-credentials')) {
       throw new Error('Invalid username or password');
@@ -228,6 +254,14 @@ async function loginAutomated(
   let code: string | undefined;
   for (let i = 0; i < 15; i++) {
     const location = resp.headers['location'] || '';
+    logger.info('Automated login redirect step', {
+      component: 'login',
+      step: i + 1,
+      status: resp.status,
+      location: safeUrlForLog(location),
+      contentType: String(resp.headers['content-type'] || ''),
+      htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
+    });
     const codeMatch = location.match(/[?&]code=([^&]+)/);
     if (codeMatch) { code = codeMatch[1]; break; }
 
@@ -244,6 +278,15 @@ async function loginAutomated(
   }
 
   if (!code) {
+    logger.warn('Automated login ended without authorization code', {
+      component: 'login',
+      status: resp.status,
+      location: safeUrlForLog(resp.headers['location']),
+      contentType: String(resp.headers['content-type'] || ''),
+      htmlTitle: typeof resp.data === 'string' ? htmlTitle(resp.data) : undefined,
+      hasForm: typeof resp.data === 'string' && /<form\b/i.test(resp.data),
+      hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
+    });
     throw new Error('Could not extract authorization code from redirect chain');
   }
 
