@@ -421,7 +421,12 @@ async function loginViaTerminal(
 // ---------------------------------------------------------------------------
 // Main login entry point
 // ---------------------------------------------------------------------------
-export async function login(isUS: boolean, username?: string, password?: string): Promise<LoginData> {
+export async function login(
+  isUS: boolean,
+  username?: string,
+  password?: string,
+  allowInteractiveFallback = true,
+): Promise<LoginData> {
   const { ssoConfig, baseUrl } = await resolveAuth0Config(isUS);
   const client = ssoConfig.client;
 
@@ -439,6 +444,11 @@ export async function login(isUS: boolean, username?: string, password?: string)
     } catch (err) {
       const msg = (err as Error).message;
       if (msg.includes('Invalid username or password')) throw err;
+
+      if (!allowInteractiveFallback) {
+        throw new Error('Automated CareLink re-login failed: ' + msg);
+      }
+
       if (msg.includes('CAPTCHA')) {
         logger.warn('CAPTCHA detected — opening browser', { component: 'login' });
       } else {
@@ -446,6 +456,10 @@ export async function login(isUS: boolean, username?: string, password?: string)
         logger.info('Falling back to browser...', { component: 'login' });
       }
     }
+  }
+
+  if (!authCode && !allowInteractiveFallback) {
+    throw new Error('Automated CareLink re-login could not obtain an authorization code');
   }
 
   // Strategy 2: Browser window (puppeteer-core)
