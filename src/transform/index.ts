@@ -38,6 +38,40 @@ function parsePumpTime(
   return Date.parse(pumpTimeString) - offsetMilliseconds;
 }
 
+function normalizeEpoch(value: number): number {
+  return value > 100_000_000_000 ? value : value * 1000;
+}
+
+function parseCareLinkSgTimestamp(
+  value: CareLinkSG & Record<string, unknown>,
+  offsetMilliseconds: number,
+): number {
+  for (const key of ['timestamp', 'date', 'datetime', 'dateTime', 'sgTimestamp']) {
+    const raw = value[key];
+
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return normalizeEpoch(raw);
+    }
+
+    if (typeof raw === 'string') {
+      const numeric = Number(raw);
+      if (Number.isFinite(numeric)) {
+        return normalizeEpoch(numeric);
+      }
+
+      const parsed = Date.parse(raw);
+      if (Number.isFinite(parsed)) {
+        // Zoned timestamps already represent UTC. Apply pump offset only
+        // to unzoned local wall-clock strings.
+        const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+        return hasZone ? parsed : parsed - offsetMilliseconds;
+      }
+    }
+  }
+
+  return NaN;
+}
+
 function timestampAsString(timestamp: number): string {
   if (!timestamp || isNaN(timestamp)) {
     return new Date().toISOString();
@@ -134,7 +168,10 @@ function sgvEntries(
   const sgvs: NightscoutSGVEntry[] = data.sgs
     .filter(entry => entry.kind === 'SG' && entry.sg !== 0)
     .map(sgv => {
-      const timestamp = parsePumpTime(sgv.datetime, offset, offsetMilliseconds);
+      const timestamp = parseCareLinkSgTimestamp(
+        sgv as CareLinkSG & Record<string, unknown>,
+        offsetMilliseconds,
+      );
       return {
         type: 'sgv' as const,
         sgv: normalizeSgToMgdl(sgv.sg, data),
