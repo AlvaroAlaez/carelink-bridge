@@ -158,7 +158,7 @@ export class CareLinkClient {
     });
 
     const isUS = (process.env['MMCONNECT_SERVER'] || 'EU').toUpperCase() !== 'EU';
-    const loginData = await login(isUS, this.options.username, this.options.password);
+    const loginData = await login(isUS, this.options.username, this.options.password, false);
     this.lastRefreshAt = Date.now();
     this.updateNextScheduledRefresh(loginData.access_token);
     this.axiosInstance.defaults.headers.common['Authorization'] = 'Bearer ' + loginData.access_token;
