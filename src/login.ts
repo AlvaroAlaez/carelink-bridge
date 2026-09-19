@@ -150,6 +150,34 @@ function formMethod(html: string): string | undefined {
   return form?.match(/\bmethod=["']([^"']+)["']/i)?.[1]?.toUpperCase();
 }
 
+function visibleErrorSummary(html: string): string[] {
+  const candidates: string[] = [];
+  const patterns = [
+    /<[^>]+role=["']alert["'][^>]*>([\s\S]*?)<\/[^>]+>/gi,
+    /<[^>]+class=["'][^"']*(?:error|alert|invalid)[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(html)) !== null) {
+      const text = m[1]
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&#39;/gi, "'")
+        .replace(/&quot;/gi, '"')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (text && text.length <= 300 && !candidates.includes(text)) candidates.push(text);
+      if (candidates.length >= 5) break;
+    }
+    if (candidates.length >= 5) break;
+  }
+  return candidates;
+}
+
 function safeFormDiagnostics(html: string): Record<string, unknown> {
   const captchaInput = html.match(/<input\b[^>]*\bname=["']captcha["'][^>]*>/i)?.[0]
     || html.match(/<input\b[^>]*\btype=["']hidden["'][^>]*\bname=["']captcha["'][^>]*>/i)?.[0];
@@ -161,6 +189,7 @@ function safeFormDiagnostics(html: string): Record<string, unknown> {
     mentionsWrongCredentials: /wrong username|wrong password|wrong-credentials|invalid username|invalid password/i.test(html),
     mentionsCaptchaChallenge: /captcha required|verify you are human|recaptcha|hcaptcha|arkose|challenge-platform/i.test(html),
     mentionsGenericError: /class=["'][^"']*error[^"']*["']|role=["']alert["']/i.test(html),
+    visibleErrors: visibleErrorSummary(html),
   };
 }
 
