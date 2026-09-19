@@ -400,7 +400,7 @@ export class CareLinkClient {
 
       const scopedBody: Record<string, string> = {
         ...body,
-        appVersion: '3.6.0',
+        appVersion: '3.8.0',
       };
       v13Bodies.push(scopedBody);
 
@@ -408,7 +408,7 @@ export class CareLinkClient {
         const unscopedBody: Record<string, string> = {
           username: this.accountUsername(),
           role,
-          appVersion: '3.6.0',
+          appVersion: '3.8.0',
         };
         v13Bodies.push(unscopedBody);
       }
@@ -422,8 +422,10 @@ export class CareLinkClient {
           );
           const resp = await this.axiosInstance.post<CareLinkData>(preferredV13, candidateBody, {
             headers: {
-              'Content-Type': 'application/json',
+              'Content-Type': 'application/json; charset=utf-8',
               'Accept': 'application/json, text/plain, */*',
+              'Accept-Language': 'en;q=0.9, *;q=0.8',
+              'Sec-Ch-Ua': '"Google Chrome";v="117", "Not;A=Brand";v="8", "Chromium";v="117"',
             },
           });
 
