@@ -362,6 +362,61 @@ export class CareLinkClient {
     const endpoints = buildEndpointCandidates(bleEndpoint);
     let lastError: unknown;
 
+    // Newer CareLink clients send appVersion on v13 and personal accounts
+    // have historically accepted both patient-scoped and unscoped bodies.
+    // Try those first, then fall back to the endpoint/version matrix.
+    const preferredV13 = endpoints.find(endpoint => /\/v13\//.test(endpoint));
+    if (preferredV13) {
+      const v13Bodies: Record<string, string>[] = [];
+
+      const scopedBody: Record<string, string> = {
+        ...body,
+        appVersion: '3.6.0',
+      };
+      v13Bodies.push(scopedBody);
+
+      if (role === 'patient') {
+        const unscopedBody: Record<string, string> = {
+          username: this.accountUsername(),
+          role,
+          appVersion: '3.6.0',
+        };
+        v13Bodies.push(unscopedBody);
+      }
+
+      for (const candidateBody of v13Bodies) {
+        try {
+          logger.log(
+            'Trying BLE v13 body:',
+            preferredV13,
+            candidateBody.patientId ? 'with patientId' : 'without patientId',
+          );
+          const resp = await this.axiosInstance.post<CareLinkData>(preferredV13, candidateBody, {
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json, text/plain, */*',
+            },
+          });
+
+          if (resp.data && resp.status === 200) {
+            logger.log('GET data (BLE)', preferredV13);
+            return resp.data;
+          }
+
+          lastError = new Error('BLE v13 endpoint returned empty data');
+        } catch (err) {
+          lastError = err;
+          const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+          logger.log(
+            'BLE v13 body failed:',
+            preferredV13,
+            candidateBody.patientId ? 'with patientId' : 'without patientId',
+            status ? `HTTP ${status}` : (err as Error).message,
+          );
+        }
+      }
+    }
+
     for (const endpoint of endpoints) {
       try {
         logger.log('Trying BLE endpoint:', endpoint);
