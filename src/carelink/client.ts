@@ -17,6 +17,35 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const MAX_REQUESTS_PER_FETCH = 30;
 
+function safeAxiosResponseSummary(err: unknown): Record<string, unknown> | undefined {
+  if (!axios.isAxiosError(err) || !err.response) return undefined;
+  const data = err.response.data;
+
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    const out: Record<string, unknown> = { responseKeys: Object.keys(obj).slice(0, 20) };
+    for (const key of ['error', 'error_description', 'message', 'code', 'status']) {
+      const value = obj[key];
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        out[key] = typeof value === 'string' ? value.slice(0, 300) : value;
+      }
+    }
+    return out;
+  }
+
+  if (typeof data === 'string') {
+    const compact = data
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { responseText: compact.slice(0, 300) };
+  }
+
+  return { responseType: typeof data };
+}
+
 export interface CareLinkClientOptions {
   username: string;
   password: string;
@@ -412,6 +441,7 @@ export class CareLinkClient {
             preferredV13,
             candidateBody.patientId ? 'with patientId' : 'without patientId',
             status ? `HTTP ${status}` : (err as Error).message,
+            safeAxiosResponseSummary(err),
           );
         }
       }
@@ -436,7 +466,12 @@ export class CareLinkClient {
       } catch (err) {
         lastError = err;
         const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-        logger.log('BLE endpoint failed:', endpoint, status ? `HTTP ${status}` : (err as Error).message);
+        logger.log(
+          'BLE endpoint failed:',
+          endpoint,
+          status ? `HTTP ${status}` : (err as Error).message,
+          safeAxiosResponseSummary(err),
+        );
       }
     }
 
