@@ -5,7 +5,9 @@ import axios, { type AxiosInstance } from 'axios';
 import * as logger from '../logger.js';
 import { loadLoginData, writeLoginDataAtomic, isTokenExpired, refreshToken, decodeTokenPayload } from './token.js';
 import { CircuitBreaker, DEFAULT_CIRCUIT_THRESHOLD, DEFAULT_CIRCUIT_COOLDOWN_MS } from '../circuit-breaker.js';
-import { isPermanentRefreshFailure } from '../refresh-failure.js';
+import { isPermanentRefreshFailure, isRefreshCredentialRejected } from '../refresh-failure.js';
+import { login } from '../login.js';
+import * as metrics from '../metrics.js';
 import { decideRetry } from '../retry-policy.js';
 import { resolveServerName, buildUrls, type CareLinkUrls } from './urls.js';
 import type { CareLinkData, CareLinkUserInfo, CareLinkPatientLink, CareLinkCountrySettings } from '../types/carelink.js';
@@ -25,6 +27,8 @@ export interface CareLinkClientOptions {
   patientId?: string;
   circuitThreshold?: number;
   circuitCooldownMs?: number;
+  autoRelogin?: boolean;
+  autoReloginCooldownMs?: number;
 }
 
 export class CareLinkClient {
@@ -37,6 +41,7 @@ export class CareLinkClient {
   private circuitBreaker: CircuitBreaker;
   private lastRefreshAt: number | null = null;
   private nextScheduledRefresh: number | null = null;
+  private lastAutoReloginAt: number | null = null;
 
   constructor(options: CareLinkClientOptions) {
     this.options = options;
@@ -118,6 +123,48 @@ export class CareLinkClient {
     this.nextScheduledRefresh = nextScheduledRefresh;
   }
 
+  setAutoReloginTracking(lastAutoReloginAt: number | null): void {
+    this.lastAutoReloginAt = lastAutoReloginAt;
+  }
+
+  getLastAutoReloginAt(): number | null {
+    return this.lastAutoReloginAt;
+  }
+
+  private canAutoRelogin(now = Date.now()): boolean {
+    if (!this.options.autoRelogin) return false;
+    const cooldown = this.options.autoReloginCooldownMs ?? 6 * 60 * 60 * 1000;
+    return this.lastAutoReloginAt === null || now - this.lastAutoReloginAt >= cooldown;
+  }
+
+  private async autoRelogin(): Promise<void> {
+    if (!this.canAutoRelogin()) {
+      const cooldown = this.options.autoReloginCooldownMs ?? 6 * 60 * 60 * 1000;
+      const remainingMs = this.lastAutoReloginAt === null
+        ? 0
+        : Math.max(0, cooldown - (Date.now() - this.lastAutoReloginAt));
+      throw new Error(
+        this.options.autoRelogin
+          ? `CareLink refresh token rejected; automatic re-login cooldown active for another ${Math.ceil(remainingMs / 60000)} min.`
+          : 'CareLink refresh token rejected; automatic re-login is disabled.',
+      );
+    }
+
+    // Record the attempt before network I/O so a failing login cannot spin.
+    this.lastAutoReloginAt = Date.now();
+    logger.warn('Refresh token rejected — attempting controlled CareLink re-login', {
+      component: 'token',
+      cooldownMinutes: Math.round((this.options.autoReloginCooldownMs ?? 6 * 60 * 60 * 1000) / 60000),
+    });
+
+    const isUS = (process.env['MMCONNECT_SERVER'] || 'EU').toUpperCase() !== 'EU';
+    const loginData = await login(isUS, this.options.username, this.options.password);
+    this.lastRefreshAt = Date.now();
+    this.updateNextScheduledRefresh(loginData.access_token);
+    this.axiosInstance.defaults.headers.common['Authorization'] = 'Bearer ' + loginData.access_token;
+    logger.warn('Automatic CareLink re-login succeeded', { component: 'token' });
+  }
+
   private updateNextScheduledRefresh(accessToken: string): void {
     try {
       const payload = decodeTokenPayload(accessToken);
@@ -148,21 +195,30 @@ export class CareLinkClient {
     if (forceRefresh || isTokenExpired(loginData.access_token)) {
       try {
         loginData = await refreshToken(loginData);
+        metrics.incTokenRefresh('success');
         this.lastRefreshAt = Date.now();
         this.updateNextScheduledRefresh(loginData.access_token);
       } catch (e) {
-        // Permanent auth failure (HTTP 400 + invalid_grant / invalid_client)
-        // means the refresh token is dead — operator must re-login. Any
-        // other error (transport, 5xx, 429, local exception) is treated as
-        // recoverable: the refresh token may still be valid, so retain the
-        // file and rethrow for the retry loop to handle.
-        if (isPermanentRefreshFailure(e)) {
-          try { fs.unlinkSync(this.loginDataPath); } catch { /* ignore */ }
-          logger.error('Deleted logindata.json — refresh token rejected. Run "npm run login" to re-authenticate.', { component: 'token' });
-          throw new Error('Refresh token rejected. Run "npm run login" to log in again.');
+        metrics.incTokenRefresh('failure');
+
+        // CareLink/Auth0 may return either the OAuth-standard
+        // 400 + invalid_grant/invalid_client or a bare HTTP 403 after the
+        // CareLink Connect app has invalidated this refresh token.
+        if (isRefreshCredentialRejected(e)) {
+          if (this.options.autoRelogin) {
+            await this.autoRelogin();
+            return true;
+          }
+
+          if (isPermanentRefreshFailure(e)) {
+            try { fs.unlinkSync(this.loginDataPath); } catch { /* ignore */ }
+          }
+          throw new Error(
+            'CareLink refresh token rejected. Re-login required; automatic re-login is disabled.',
+          );
         }
-        // Recoverable — rethrow the original error verbatim so the retry
-        // loop in fetch() can apply its own backoff policy.
+
+        // Transport, 5xx, 429, and local exceptions remain recoverable.
         throw e;
       }
       try {
