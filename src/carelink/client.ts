@@ -359,19 +359,33 @@ export class CareLinkClient {
       body.patientId = patientId;
     }
 
-    const resp = await this.axiosInstance.post<CareLinkData>(bleEndpoint, body, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/plain, */*',
-      },
-    });
+    const endpoints = buildEndpointCandidates(bleEndpoint);
+    let lastError: unknown;
 
-    if (resp.data && resp.status === 200) {
-      logger.log('GET data (BLE)', bleEndpoint);
-      return resp.data;
+    for (const endpoint of endpoints) {
+      try {
+        logger.log('Trying BLE endpoint:', endpoint);
+        const resp = await this.axiosInstance.post<CareLinkData>(endpoint, body, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*',
+          },
+        });
+
+        if (resp.data && resp.status === 200) {
+          logger.log('GET data (BLE)', endpoint);
+          return resp.data;
+        }
+
+        lastError = new Error('BLE endpoint returned empty data');
+      } catch (err) {
+        lastError = err;
+        const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+        logger.log('BLE endpoint failed:', endpoint, status ? `HTTP ${status}` : (err as Error).message);
+      }
     }
 
-    throw new Error('BLE endpoint returned empty data');
+    throw lastError instanceof Error ? lastError : new Error('All BLE data endpoints failed');
   }
 
   private async fetchAsPatient(): Promise<CareLinkData> {
