@@ -150,6 +150,20 @@ function formMethod(html: string): string | undefined {
   return form?.match(/\bmethod=["']([^"']+)["']/i)?.[1]?.toUpperCase();
 }
 
+function safeFormDiagnostics(html: string): Record<string, unknown> {
+  const captchaInput = html.match(/<input\b[^>]*\bname=["']captcha["'][^>]*>/i)?.[0]
+    || html.match(/<input\b[^>]*\btype=["']hidden["'][^>]*\bname=["']captcha["'][^>]*>/i)?.[0];
+  const captchaValue = captchaInput?.match(/\bvalue=["']([^"']*)["']/i)?.[1];
+
+  return {
+    captchaFieldPresent: !!captchaInput,
+    captchaHasValue: typeof captchaValue === 'string' && captchaValue.length > 0,
+    mentionsWrongCredentials: /wrong username|wrong password|wrong-credentials|invalid username|invalid password/i.test(html),
+    mentionsCaptchaChallenge: /captcha required|verify you are human|recaptcha|hcaptcha|arkose|challenge-platform/i.test(html),
+    mentionsGenericError: /class=["'][^"']*error[^"']*["']|role=["']alert["']/i.test(html),
+  };
+}
+
 async function loginAutomated(
   username: string,
   password: string,
@@ -259,13 +273,14 @@ async function loginAutomated(
     hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
     formMethod: typeof resp.data === 'string' ? formMethod(resp.data) : undefined,
     inputFields: typeof resp.data === 'string' ? formInputSummary(resp.data) : undefined,
+    ...(typeof resp.data === 'string' ? safeFormDiagnostics(resp.data) : {}),
   });
 
-  if (resp.status === 200 && typeof resp.data === 'string') {
-    if (resp.data.includes('Wrong username or password') || resp.data.includes('wrong-credentials')) {
+  if (typeof resp.data === 'string') {
+    if (/Wrong username or password|wrong-credentials|invalid username|invalid password/i.test(resp.data)) {
       throw new Error('Invalid username or password');
     }
-    if (resp.data.includes('captcha') || resp.data.includes('CAPTCHA') || resp.data.includes('arkose')) {
+    if (/captcha required|verify you are human|recaptcha|hcaptcha|arkose|challenge-platform/i.test(resp.data)) {
       throw new Error('CAPTCHA required');
     }
   }
@@ -311,6 +326,7 @@ async function loginAutomated(
       hasMetaRefresh: typeof resp.data === 'string' && /http-equiv=["']?refresh/i.test(resp.data),
       formMethod: typeof resp.data === 'string' ? formMethod(resp.data) : undefined,
       inputFields: typeof resp.data === 'string' ? formInputSummary(resp.data) : undefined,
+      ...(typeof resp.data === 'string' ? safeFormDiagnostics(resp.data) : {}),
     });
     throw new Error('Could not extract authorization code from redirect chain');
   }
