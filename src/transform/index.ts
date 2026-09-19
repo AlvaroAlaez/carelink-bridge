@@ -1,5 +1,5 @@
 import * as logger from '../logger.js';
-import type { CareLinkData } from '../types/carelink.js';
+import type { CareLinkData, CareLinkSG } from '../types/carelink.js';
 import { evaluateLastAlarm, logLastAlarm } from '../last-alarm.js';
 
 import type { NightscoutSGVEntry, NightscoutDeviceStatus, NightscoutLastAlarmAnnotation, TransformResult } from '../types/nightscout.js';
