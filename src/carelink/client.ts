@@ -281,6 +281,23 @@ export class CareLinkClient {
     return this.currentUser?.username || this.options.username;
   }
 
+  private async patientIdentityUsername(): Promise<string> {
+    if (this.currentUser?.username) return this.currentUser.username;
+
+    try {
+      const profileResp = await this.axiosInstance.get<Record<string, unknown>>(this.urls.profile);
+      const username = profileResp.data?.['username'];
+      if (typeof username === 'string' && username.trim()) {
+        logger.log('Using patient username from /users/me/profile');
+        return username;
+      }
+    } catch (err) {
+      logger.log('Patient profile fallback failed:', (err as Error).message);
+    }
+
+    return this.options.username;
+  }
+
   private async getConnectData(): Promise<CareLinkData> {
     const resp = await this.axiosInstance.get<CareLinkUserInfo>(this.urls.me);
     this.currentUser = resp.data;
@@ -380,7 +397,7 @@ export class CareLinkClient {
     }
 
     const body: Record<string, string> = {
-      username: this.accountUsername(),
+      username: role === 'patient' && patientId ? patientId : this.accountUsername(),
       role,
     };
 
@@ -406,7 +423,7 @@ export class CareLinkClient {
 
       if (role === 'patient') {
         const unscopedBody: Record<string, string> = {
-          username: this.accountUsername(),
+          username: patientId || this.accountUsername(),
           role,
           appVersion: '3.8.0',
         };
@@ -481,13 +498,15 @@ export class CareLinkClient {
   }
 
   private async fetchAsPatient(): Promise<CareLinkData> {
+    const patientUsername = await this.patientIdentityUsername();
+
     // Try the monitor endpoint first (works for 7xxG pumps)
     try {
       const resp = await this.axiosInstance.get<CareLinkData>(this.urls.monitorData);
 
       if (resp.data && this.isBleDevice(resp.data.deviceFamily || resp.data.medicalDeviceFamily)) {
         logger.log('BLE device detected, using BLE endpoint');
-        return this.fetchBleDeviceData(this.accountUsername());
+        return this.fetchBleDeviceData(patientUsername);
       }
 
       if (resp.status === 200 && resp.data && Object.keys(resp.data).length > 1) {
