@@ -32,17 +32,51 @@ export function guessPumpOffset(data: CareLinkData): string {
   return offset;
 }
 
-export function guessPumpOffsetMilliseconds(data: CareLinkData): number {
-  // v13 patientData responses can omit sMedicalDeviceTime. In that case,
-  // infer the pump clock from the most recent SG timestamp; if that is also
-  // unavailable, fall back to zero offset rather than returning NaN and
-  // dropping every SGV in the recency filter.
-  const pumpClock =
-    data.sMedicalDeviceTime ||
-    data.lastSG?.datetime ||
-    data.sgs?.[data.sgs.length - 1]?.datetime;
+function normalizeEpoch(value: number): number {
+  return value > 100_000_000_000 ? value : value * 1000;
+}
 
-  const pumpTimeAsIfUTC = pumpClock ? Date.parse(pumpClock) : NaN;
+function sgClockValue(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  const sg = value as Record<string, unknown>;
+  for (const key of ['timestamp', 'date', 'datetime', 'dateTime', 'sgTimestamp']) {
+    if (sg[key] !== undefined && sg[key] !== null && sg[key] !== '') return sg[key];
+  }
+  return undefined;
+}
+
+function parseSgClockAsIfUtc(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return normalizeEpoch(value);
+  if (typeof value !== 'string') return NaN;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return normalizeEpoch(numeric);
+
+  const hasZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(value);
+  if (hasZone) return Date.parse(value);
+
+  // v13 timestamps are local wall-clock ISO strings without a timezone.
+  // Parse them as if they were UTC first; the calculated pump offset below
+  // then converts that wall clock to the real UTC instant.
+  if (/^\\d{4}-\\d{2}-\\d{2}T/.test(value)) {
+    return Date.parse(value + 'Z');
+  }
+
+  return Date.parse(value);
+}
+
+export function guessPumpOffsetMilliseconds(data: CareLinkData): number {
+  // v13 patientData responses can omit sMedicalDeviceTime and use timestamp
+  // instead of legacy datetime. Prefer lastSG, then fall back to an SG item.
+  const lastSgClock = sgClockValue(data.lastSG);
+  const fallbackSgClock = Array.isArray(data.sgs)
+    ? data.sgs.map(sgClockValue).find(value => value !== undefined)
+    : undefined;
+
+  const pumpClock = data.sMedicalDeviceTime || lastSgClock || fallbackSgClock;
+  const pumpTimeAsIfUTC = data.sMedicalDeviceTime
+    ? Date.parse(data.sMedicalDeviceTime)
+    : parseSgClockAsIfUtc(pumpClock);
   const serverTimeUTC = data.currentServerTime;
 
   if (!Number.isFinite(pumpTimeAsIfUTC) || !Number.isFinite(serverTimeUTC)) {
