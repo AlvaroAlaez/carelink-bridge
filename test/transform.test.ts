@@ -2,6 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { data, makeSG } from './fixtures.js';
 import { missingLastSgv } from './samples.js';
 import { transform } from '../src/transform/index.js';
+import type { CareLinkSG } from '../src/types/carelink.js';
+
+function makeV13SG(sg: number, timestamp: string): CareLinkSG & { timestamp: string } {
+  return {
+    sg,
+    timestamp,
+    version: 1,
+    timeChange: false,
+    kind: 'SG',
+  } as unknown as CareLinkSG & { timestamp: string };
+}
 
 describe('transform()', () => {
   it('should obey sgvLimit', () => {
