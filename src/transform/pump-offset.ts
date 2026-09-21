@@ -69,15 +69,23 @@ export function guessPumpOffsetMilliseconds(data: CareLinkData): number {
   // v13 patientData responses can omit sMedicalDeviceTime and use timestamp
   // instead of legacy datetime. Prefer lastSG, then fall back to an SG item.
   const lastSgClock = sgClockValue(data.lastSG);
-  const fallbackSgClock = Array.isArray(data.sgs)
-    ? data.sgs.map(sgClockValue).find(value => value !== undefined)
-    : undefined;
+  const fallbackCandidates = Array.isArray(data.sgs)
+    ? data.sgs
+      .map(sgClockValue)
+      .map(value => ({ value, parsed: parseSgClockAsIfUtc(value) }))
+      .filter(item => Number.isFinite(item.parsed))
+      .sort((a, b) => b.parsed - a.parsed)
+    : [];
+  const fallbackSgClock = fallbackCandidates[0]?.value;
 
+  const usingMedicalDeviceClock = !!data.sMedicalDeviceTime;
   const pumpClock = data.sMedicalDeviceTime || lastSgClock || fallbackSgClock;
-  const pumpTimeAsIfUTC = data.sMedicalDeviceTime
+  const pumpTimeAsIfUTC = usingMedicalDeviceClock
     ? Date.parse(data.sMedicalDeviceTime)
     : parseSgClockAsIfUtc(pumpClock);
-  const serverTimeUTC = data.currentServerTime;
+  const serverTimeUTC = usingMedicalDeviceClock
+    ? data.currentServerTime
+    : (data.lastMedicalDeviceDataUpdateServerTime || data.currentServerTime);
 
   if (!Number.isFinite(pumpTimeAsIfUTC) || !Number.isFinite(serverTimeUTC)) {
     logger.warn('Unable to infer pump timezone; using zero offset', {
