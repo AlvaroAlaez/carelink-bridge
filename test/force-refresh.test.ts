@@ -94,7 +94,7 @@ describe('CareLinkClient.fetch() on 401 (#21)', () => {
   it('should not refresh on non-auth errors (e.g. network failures)', async () => {
     let meCalls = 0;
     axiosInstance.get.mockImplementation(async (url: string) => {
-      if (url.includes('/users/me')) {
+      if (url.endsWith('/users/me')) {
         meCalls++;
         if (meCalls === 1) {
           const err = new Error('socket hang up') as Error & { code: string };
