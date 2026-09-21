@@ -59,11 +59,14 @@ function parseCareLinkSgTimestamp(
         return normalizeEpoch(numeric);
       }
 
-      const parsed = Date.parse(raw);
+      // Zoned timestamps already represent UTC. v13 local wall-clock ISO
+      // timestamps do not carry a zone, so parse those as UTC first and
+      // then subtract the inferred patient/pump offset.
+      const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+      const parsed = !hasZone && /^\d{4}-\d{2}-\d{2}T/.test(raw)
+        ? Date.parse(raw + 'Z')
+        : Date.parse(raw);
       if (Number.isFinite(parsed)) {
-        // Zoned timestamps already represent UTC. Apply pump offset only
-        // to unzoned local wall-clock strings.
-        const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
         return hasZone ? parsed : parsed - offsetMilliseconds;
       }
     }
