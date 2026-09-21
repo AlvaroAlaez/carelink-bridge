@@ -52,13 +52,13 @@ function parseSgClockAsIfUtc(value: unknown): number {
   const numeric = Number(value);
   if (Number.isFinite(numeric)) return normalizeEpoch(numeric);
 
-  const hasZone = /(?:Z|[+-]\\d{2}:?\\d{2})$/i.test(value);
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
   if (hasZone) return Date.parse(value);
 
   // v13 timestamps are local wall-clock ISO strings without a timezone.
   // Parse them as if they were UTC first; the calculated pump offset below
   // then converts that wall clock to the real UTC instant.
-  if (/^\\d{4}-\\d{2}-\\d{2}T/.test(value)) {
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
     return Date.parse(value + 'Z');
   }
 
