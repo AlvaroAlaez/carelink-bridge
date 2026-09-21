@@ -194,7 +194,7 @@ describe('CareLinkClient.fetch() on 401 (#21)', () => {
             },
           };
         }
-        return { status: 200, data: { role: 'PATIENT' } };
+        return { status: 200, data: { role: 'PATIENT', username: 'u' } };
       }
       if (url.includes('/monitor/data')) {
         return { status: 200, data: monitorData };
