@@ -1,10 +1,16 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import * as logger from '../logger.js';
 import axios from 'axios';
 import qs from 'qs';
 import type { LoginData } from '../types/carelink.js';
 
 const SECRET_FILE_MODE = 0o600;
+
+function tokenFingerprint(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
+}
 
 /**
  * Tightens an existing logindata.json to mode 0600 in-place. Safe to call on
@@ -141,7 +147,11 @@ export function isTokenExpired(accessToken: string): boolean {
 }
 
 export async function refreshToken(loginData: LoginData): Promise<LoginData> {
-  logger.info('Refreshing access token...', { component: 'token' });
+  const refreshBefore = tokenFingerprint(loginData.refresh_token);
+  logger.info('Refreshing access token...', {
+    component: 'token',
+    refreshTokenFp: refreshBefore,
+  });
 
   const resp = await axios.post(
     loginData.token_url,
@@ -158,6 +168,11 @@ export async function refreshToken(loginData: LoginData): Promise<LoginData> {
     loginData.refresh_token = resp.data.refresh_token;
   }
 
-  logger.info('Token refreshed successfully', { component: 'token' });
+  logger.info('Token refreshed successfully', {
+    component: 'token',
+    refreshTokenFpBefore: refreshBefore,
+    refreshTokenFpAfter: tokenFingerprint(loginData.refresh_token),
+    refreshTokenRotated: !!resp.data.refresh_token && tokenFingerprint(loginData.refresh_token) !== refreshBefore,
+  });
   return loginData;
 }

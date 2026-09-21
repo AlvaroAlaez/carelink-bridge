@@ -32,9 +32,70 @@ export function guessPumpOffset(data: CareLinkData): string {
   return offset;
 }
 
+function normalizeEpoch(value: number): number {
+  return value > 100_000_000_000 ? value : value * 1000;
+}
+
+function sgClockValue(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  const sg = value as Record<string, unknown>;
+  for (const key of ['timestamp', 'date', 'datetime', 'dateTime', 'sgTimestamp']) {
+    if (sg[key] !== undefined && sg[key] !== null && sg[key] !== '') return sg[key];
+  }
+  return undefined;
+}
+
+function parseSgClockAsIfUtc(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return normalizeEpoch(value);
+  if (typeof value !== 'string') return NaN;
+
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return normalizeEpoch(numeric);
+
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+  if (hasZone) return Date.parse(value);
+
+  // v13 timestamps are local wall-clock ISO strings without a timezone.
+  // Parse them as if they were UTC first; the calculated pump offset below
+  // then converts that wall clock to the real UTC instant.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    return Date.parse(value + 'Z');
+  }
+
+  return Date.parse(value);
+}
+
 export function guessPumpOffsetMilliseconds(data: CareLinkData): number {
-  const pumpTimeAsIfUTC = Date.parse(data.sMedicalDeviceTime);
-  const serverTimeUTC = data.currentServerTime;
+  // v13 patientData responses can omit sMedicalDeviceTime and use timestamp
+  // instead of legacy datetime. Prefer lastSG, then fall back to an SG item.
+  const lastSgClock = sgClockValue(data.lastSG);
+  const fallbackCandidates = Array.isArray(data.sgs)
+    ? data.sgs
+      .map(sgClockValue)
+      .map(value => ({ value, parsed: parseSgClockAsIfUtc(value) }))
+      .filter(item => Number.isFinite(item.parsed))
+      .sort((a, b) => b.parsed - a.parsed)
+    : [];
+  const fallbackSgClock = fallbackCandidates[0]?.value;
+
+  const usingMedicalDeviceClock = !!data.sMedicalDeviceTime;
+  const pumpClock = data.sMedicalDeviceTime || lastSgClock || fallbackSgClock;
+  const pumpTimeAsIfUTC = usingMedicalDeviceClock
+    ? Date.parse(data.sMedicalDeviceTime)
+    : parseSgClockAsIfUtc(pumpClock);
+  const serverTimeUTC = usingMedicalDeviceClock
+    ? data.currentServerTime
+    : (data.lastMedicalDeviceDataUpdateServerTime || data.currentServerTime);
+
+  if (!Number.isFinite(pumpTimeAsIfUTC) || !Number.isFinite(serverTimeUTC)) {
+    logger.warn('Unable to infer pump timezone; using zero offset', {
+      component: 'transform',
+      hasPumpClock: !!pumpClock,
+      hasServerTime: Number.isFinite(serverTimeUTC),
+    });
+    return 0;
+  }
+
   const raw = pumpTimeAsIfUTC - serverTimeUTC;
   return Math.round(raw / QUARTER_HOUR_MS) * QUARTER_HOUR_MS;
 }

@@ -37,6 +37,7 @@ describe('persistent-state', () => {
       circuitOpenUntil: 0,
       lastRefreshTokenUse: null,
       nextScheduledRefresh: null,
+      lastAutoReloginAt: null,
     });
     expect(defaultState().version).toBe(1);
   });

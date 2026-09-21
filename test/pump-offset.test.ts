@@ -43,6 +43,25 @@ describe('guessPumpOffsetMilliseconds()', () => {
     expect(guessPumpOffsetMilliseconds(dataWithOffset(5.5 * HOUR, -4 * MINUTE))).toBe(5.5 * HOUR);
     expect(guessPumpOffsetMilliseconds(dataWithOffset(-7 * HOUR, 7 * MINUTE))).toBe(-7 * HOUR);
   });
+
+  it('should infer v13 offset from timestamp when sMedicalDeviceTime is absent', () => {
+    const lastUpdate = Date.parse('2026-09-20T10:15:30Z');
+    const d = {
+      sMedicalDeviceTime: '',
+      currentServerTime: Date.parse('2026-09-20T10:20:00Z'),
+      lastMedicalDeviceDataUpdateServerTime: lastUpdate,
+      lastSG: {
+        sg: 123,
+        timestamp: '2026-09-20T12:15:00',
+        version: 1,
+        timeChange: false,
+        kind: 'SG',
+      },
+      sgs: [],
+    } as unknown as CareLinkData;
+
+    expect(guessPumpOffsetMilliseconds(d)).toBe(2 * HOUR);
+  });
 });
 
 describe('guessPumpOffset()', () => {

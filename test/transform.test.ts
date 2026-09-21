@@ -2,6 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { data, makeSG } from './fixtures.js';
 import { missingLastSgv } from './samples.js';
 import { transform } from '../src/transform/index.js';
+import type { CareLinkSG } from '../src/types/carelink.js';
+
+function makeV13SG(sg: number, timestamp: string): CareLinkSG & { timestamp: string } {
+  return {
+    sg,
+    timestamp,
+    version: 1,
+    timeChange: false,
+    kind: 'SG',
+  } as unknown as CareLinkSG & { timestamp: string };
+}
 
 describe('transform()', () => {
   it('should obey sgvLimit', () => {
@@ -38,6 +49,70 @@ describe('transform()', () => {
     ).toHaveLength(0);
   });
 
+  describe('v13 SG timestamps', () => {
+    const currentServerTime = Date.parse('2026-09-20T10:20:00Z');
+    const lastUpdate = Date.parse('2026-09-20T10:15:30Z');
+
+    it('sorts unsorted v13 readings before applying sgvLimit', () => {
+      const newest = makeV13SG(115, '2026-09-20T12:15:00');
+      const result = transform(data({
+        sMedicalDeviceTime: '',
+        currentServerTime,
+        lastMedicalDeviceDataUpdateServerTime: lastUpdate,
+        lastSG: newest,
+        lastSGTrend: 'UP',
+        sgs: [
+          newest,
+          makeV13SG(105, '2026-09-20T12:05:00'),
+          makeV13SG(110, '2026-09-20T12:10:00'),
+        ],
+      }), 2);
+
+      expect(result.entries.map(entry => entry.sgv)).toEqual([110, 115]);
+      expect(result.entries.map(entry => entry.date)).toEqual([
+        Date.parse('2026-09-20T10:10:00Z'),
+        Date.parse('2026-09-20T10:15:00Z'),
+      ]);
+      expect(result.entries[1].direction).toBe('SingleUp');
+    });
+
+    it('drops v13 readings with invalid timestamps', () => {
+      const valid = makeV13SG(110, '2026-09-20T12:10:00');
+      const invalid = makeV13SG(190, 'invalid-timestamp');
+      const result = transform(data({
+        sMedicalDeviceTime: '',
+        currentServerTime,
+        lastMedicalDeviceDataUpdateServerTime: lastUpdate,
+        lastSG: valid,
+        sgs: [invalid, valid],
+      }));
+
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].sgv).toBe(110);
+      expect(Number.isFinite(result.entries[0].date)).toBe(true);
+    });
+
+    it('does not attach trend when the newest v13 SG is missing', () => {
+      const missingNewest = makeV13SG(0, '2026-09-20T12:20:00');
+      const result = transform(data({
+        sMedicalDeviceTime: '',
+        currentServerTime,
+        lastMedicalDeviceDataUpdateServerTime: currentServerTime,
+        lastSG: missingNewest,
+        lastSGTrend: 'UP_DOUBLE',
+        sgs: [
+          makeV13SG(110, '2026-09-20T12:10:00'),
+          missingNewest,
+          makeV13SG(115, '2026-09-20T12:15:00'),
+        ],
+      }));
+
+      expect(result.entries.map(entry => entry.sgv)).toEqual([110, 115]);
+      const last = result.entries[result.entries.length - 1];
+      expect(last.direction).toBeUndefined();
+      expect(last.trend).toBeUndefined();
+    });
+  });
   describe('active insulin', () => {
     it('should include active insulin', () => {
       const pumpStatus = transform(

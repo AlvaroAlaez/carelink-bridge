@@ -63,3 +63,22 @@ export function isPermanentRefreshFailure(error: unknown): boolean {
   const d = data as { error?: unknown };
   return typeof d.error === 'string' && PERMANENT_OAUTH_ERRORS[d.error] === true;
 }
+
+
+/**
+ * CareLink/Auth0 has also been observed returning HTTP 403 when a refresh
+ * token has been invalidated by a newer CareLink Connect login. In that
+ * situation retrying the same refresh token cannot recover the session.
+ *
+ * Keep this separate from isPermanentRefreshFailure(): the latter models the
+ * OAuth-spec 400 + invalid_grant/invalid_client contract, while this helper
+ * captures the real-world CareLink 403 behaviour that should trigger a
+ * controlled re-login.
+ */
+export function isRefreshCredentialRejected(error: unknown): boolean {
+  if (isPermanentRefreshFailure(error)) return true;
+  if (!error || typeof error !== 'object') return false;
+  const response = (error as { response?: unknown }).response;
+  if (!response || typeof response !== 'object') return false;
+  return (response as { status?: unknown }).status === 403;
+}

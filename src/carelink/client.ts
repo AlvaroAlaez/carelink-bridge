@@ -5,7 +5,9 @@ import axios, { type AxiosInstance } from 'axios';
 import * as logger from '../logger.js';
 import { loadLoginData, writeLoginDataAtomic, isTokenExpired, refreshToken, decodeTokenPayload } from './token.js';
 import { CircuitBreaker, DEFAULT_CIRCUIT_THRESHOLD, DEFAULT_CIRCUIT_COOLDOWN_MS } from '../circuit-breaker.js';
-import { isPermanentRefreshFailure } from '../refresh-failure.js';
+import { isPermanentRefreshFailure, isRefreshCredentialRejected } from '../refresh-failure.js';
+import { login } from '../login.js';
+import * as metrics from '../metrics.js';
 import { decideRetry } from '../retry-policy.js';
 import { resolveServerName, buildUrls, type CareLinkUrls } from './urls.js';
 import type { CareLinkData, CareLinkUserInfo, CareLinkPatientLink, CareLinkCountrySettings } from '../types/carelink.js';
@@ -14,6 +16,35 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const MAX_REQUESTS_PER_FETCH = 30;
+
+function safeAxiosResponseSummary(err: unknown): Record<string, unknown> | undefined {
+  if (!axios.isAxiosError(err) || !err.response) return undefined;
+  const data = err.response.data;
+
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    const out: Record<string, unknown> = { responseKeys: Object.keys(obj).slice(0, 20) };
+    for (const key of ['error', 'error_description', 'message', 'code', 'status']) {
+      const value = obj[key];
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        out[key] = typeof value === 'string' ? value.slice(0, 300) : value;
+      }
+    }
+    return out;
+  }
+
+  if (typeof data === 'string') {
+    const compact = data
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { responseText: compact.slice(0, 300) };
+  }
+
+  return { responseType: typeof data };
+}
 
 export interface CareLinkClientOptions {
   username: string;
@@ -25,6 +56,8 @@ export interface CareLinkClientOptions {
   patientId?: string;
   circuitThreshold?: number;
   circuitCooldownMs?: number;
+  autoRelogin?: boolean;
+  autoReloginCooldownMs?: number;
 }
 
 export class CareLinkClient {
@@ -37,6 +70,7 @@ export class CareLinkClient {
   private circuitBreaker: CircuitBreaker;
   private lastRefreshAt: number | null = null;
   private nextScheduledRefresh: number | null = null;
+  private lastAutoReloginAt: number | null = null;
 
   constructor(options: CareLinkClientOptions) {
     this.options = options;
@@ -118,6 +152,48 @@ export class CareLinkClient {
     this.nextScheduledRefresh = nextScheduledRefresh;
   }
 
+  setAutoReloginTracking(lastAutoReloginAt: number | null): void {
+    this.lastAutoReloginAt = lastAutoReloginAt;
+  }
+
+  getLastAutoReloginAt(): number | null {
+    return this.lastAutoReloginAt;
+  }
+
+  private canAutoRelogin(now = Date.now()): boolean {
+    if (!this.options.autoRelogin) return false;
+    const cooldown = this.options.autoReloginCooldownMs ?? 6 * 60 * 60 * 1000;
+    return this.lastAutoReloginAt === null || now - this.lastAutoReloginAt >= cooldown;
+  }
+
+  private async autoRelogin(): Promise<void> {
+    if (!this.canAutoRelogin()) {
+      const cooldown = this.options.autoReloginCooldownMs ?? 6 * 60 * 60 * 1000;
+      const remainingMs = this.lastAutoReloginAt === null
+        ? 0
+        : Math.max(0, cooldown - (Date.now() - this.lastAutoReloginAt));
+      throw new Error(
+        this.options.autoRelogin
+          ? `CareLink refresh token rejected; automatic re-login cooldown active for another ${Math.ceil(remainingMs / 60000)} min.`
+          : 'CareLink refresh token rejected; automatic re-login is disabled.',
+      );
+    }
+
+    // Record the attempt before network I/O so a failing login cannot spin.
+    this.lastAutoReloginAt = Date.now();
+    logger.warn('Refresh token rejected — attempting controlled CareLink re-login', {
+      component: 'token',
+      cooldownMinutes: Math.round((this.options.autoReloginCooldownMs ?? 6 * 60 * 60 * 1000) / 60000),
+    });
+
+    const isUS = (process.env['MMCONNECT_SERVER'] || 'EU').toUpperCase() !== 'EU';
+    const loginData = await login(isUS, this.options.username, this.options.password, false);
+    this.lastRefreshAt = Date.now();
+    this.updateNextScheduledRefresh(loginData.access_token);
+    this.axiosInstance.defaults.headers.common['Authorization'] = 'Bearer ' + loginData.access_token;
+    logger.warn('Automatic CareLink re-login succeeded', { component: 'token' });
+  }
+
   private updateNextScheduledRefresh(accessToken: string): void {
     try {
       const payload = decodeTokenPayload(accessToken);
@@ -148,21 +224,30 @@ export class CareLinkClient {
     if (forceRefresh || isTokenExpired(loginData.access_token)) {
       try {
         loginData = await refreshToken(loginData);
+        metrics.incTokenRefresh('success');
         this.lastRefreshAt = Date.now();
         this.updateNextScheduledRefresh(loginData.access_token);
       } catch (e) {
-        // Permanent auth failure (HTTP 400 + invalid_grant / invalid_client)
-        // means the refresh token is dead — operator must re-login. Any
-        // other error (transport, 5xx, 429, local exception) is treated as
-        // recoverable: the refresh token may still be valid, so retain the
-        // file and rethrow for the retry loop to handle.
-        if (isPermanentRefreshFailure(e)) {
-          try { fs.unlinkSync(this.loginDataPath); } catch { /* ignore */ }
-          logger.error('Deleted logindata.json — refresh token rejected. Run "npm run login" to re-authenticate.', { component: 'token' });
-          throw new Error('Refresh token rejected. Run "npm run login" to log in again.');
+        metrics.incTokenRefresh('failure');
+
+        // CareLink/Auth0 may return either the OAuth-standard
+        // 400 + invalid_grant/invalid_client or a bare HTTP 403 after the
+        // CareLink Connect app has invalidated this refresh token.
+        if (isRefreshCredentialRejected(e)) {
+          if (this.options.autoRelogin) {
+            await this.autoRelogin();
+            return true;
+          }
+
+          if (isPermanentRefreshFailure(e)) {
+            try { fs.unlinkSync(this.loginDataPath); } catch { /* ignore */ }
+          }
+          throw new Error(
+            'CareLink refresh token rejected. Re-login required; automatic re-login is disabled.',
+          );
         }
-        // Recoverable — rethrow the original error verbatim so the retry
-        // loop in fetch() can apply its own backoff policy.
+
+        // Transport, 5xx, 429, and local exceptions remain recoverable.
         throw e;
       }
       try {
@@ -194,6 +279,23 @@ export class CareLinkClient {
 
   private accountUsername(): string {
     return this.currentUser?.username || this.options.username;
+  }
+
+  private async patientIdentityUsername(): Promise<string> {
+    if (this.currentUser?.username) return this.currentUser.username;
+
+    try {
+      const profileResp = await this.axiosInstance.get<Record<string, unknown>>(this.urls.profile);
+      const username = profileResp.data?.['username'];
+      if (typeof username === 'string' && username.trim()) {
+        logger.log('Using patient username from /users/me/profile');
+        return username;
+      }
+    } catch (err) {
+      logger.log('Patient profile fallback failed:', (err as Error).message);
+    }
+
+    return this.options.username;
   }
 
   private async getConnectData(): Promise<CareLinkData> {
@@ -295,7 +397,7 @@ export class CareLinkClient {
     }
 
     const body: Record<string, string> = {
-      username: this.accountUsername(),
+      username: role === 'patient' && patientId ? patientId : this.accountUsername(),
       role,
     };
 
@@ -303,29 +405,115 @@ export class CareLinkClient {
       body.patientId = patientId;
     }
 
-    const resp = await this.axiosInstance.post<CareLinkData>(bleEndpoint, body, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/plain, */*',
-      },
-    });
+    const endpoints = buildEndpointCandidates(bleEndpoint);
+    let lastError: unknown;
 
-    if (resp.data && resp.status === 200) {
-      logger.log('GET data (BLE)', bleEndpoint);
-      return resp.data;
+    // Newer CareLink clients send appVersion on v13 and personal accounts
+    // have historically accepted both patient-scoped and unscoped bodies.
+    // Try those first, then fall back to the endpoint/version matrix.
+    const preferredV13 = endpoints.find(endpoint => /\/v13\//.test(endpoint));
+    if (preferredV13) {
+      const v13Bodies: Record<string, string>[] = [];
+
+      const scopedBody: Record<string, string> = {
+        ...body,
+        appVersion: '3.8.0',
+      };
+      v13Bodies.push(scopedBody);
+
+      if (role === 'patient') {
+        const unscopedBody: Record<string, string> = {
+          username: patientId || this.accountUsername(),
+          role,
+          appVersion: '3.8.0',
+        };
+        v13Bodies.push(unscopedBody);
+      }
+
+      for (const candidateBody of v13Bodies) {
+        try {
+          logger.log(
+            'Trying BLE v13 body:',
+            preferredV13,
+            candidateBody.patientId ? 'with patientId' : 'without patientId',
+          );
+          const resp = await this.axiosInstance.post<CareLinkData>(preferredV13, candidateBody, {
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Accept': 'application/json, text/plain, */*',
+              'Accept-Language': 'en;q=0.9, *;q=0.8',
+              'Sec-Ch-Ua': '"Google Chrome";v="117", "Not;A=Brand";v="8", "Chromium";v="117"',
+            },
+          });
+
+          if (resp.data && resp.status === 200) {
+            logger.log('GET data (BLE)', preferredV13);
+
+            const wrapped = resp.data as CareLinkData & { patientData?: CareLinkData };
+            if (wrapped.patientData && typeof wrapped.patientData === 'object') {
+              logger.log('Unwrapping BLE v13 patientData payload');
+              return wrapped.patientData;
+            }
+
+            return resp.data;
+          }
+
+          lastError = new Error('BLE v13 endpoint returned empty data');
+        } catch (err) {
+          lastError = err;
+          const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+          logger.log(
+            'BLE v13 body failed:',
+            preferredV13,
+            candidateBody.patientId ? 'with patientId' : 'without patientId',
+            status ? `HTTP ${status}` : (err as Error).message,
+            safeAxiosResponseSummary(err),
+          );
+        }
+      }
     }
 
-    throw new Error('BLE endpoint returned empty data');
+    for (const endpoint of endpoints) {
+      try {
+        logger.log('Trying BLE endpoint:', endpoint);
+        const resp = await this.axiosInstance.post<CareLinkData>(endpoint, body, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*',
+          },
+        });
+
+        if (resp.data && resp.status === 200) {
+          logger.log('GET data (BLE)', endpoint);
+          return resp.data;
+        }
+
+        lastError = new Error('BLE endpoint returned empty data');
+      } catch (err) {
+        lastError = err;
+        const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+        logger.log(
+          'BLE endpoint failed:',
+          endpoint,
+          status ? `HTTP ${status}` : (err as Error).message,
+          safeAxiosResponseSummary(err),
+        );
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('All BLE data endpoints failed');
   }
 
   private async fetchAsPatient(): Promise<CareLinkData> {
+    const patientUsername = await this.patientIdentityUsername();
+
     // Try the monitor endpoint first (works for 7xxG pumps)
     try {
       const resp = await this.axiosInstance.get<CareLinkData>(this.urls.monitorData);
 
       if (resp.data && this.isBleDevice(resp.data.deviceFamily || resp.data.medicalDeviceFamily)) {
         logger.log('BLE device detected, using BLE endpoint');
-        return this.fetchBleDeviceData(this.accountUsername());
+        return this.fetchBleDeviceData(patientUsername);
       }
 
       if (resp.status === 200 && resp.data && Object.keys(resp.data).length > 1) {
