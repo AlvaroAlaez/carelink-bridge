@@ -165,25 +165,55 @@ function sgvEntries(
     return [];
   }
 
-  const sgvs: NightscoutSGVEntry[] = data.sgs
-    .filter(entry => entry.kind === 'SG' && entry.sg !== 0)
-    .map(sgv => {
-      const timestamp = parseCareLinkSgTimestamp(
+  const parsed = data.sgs
+    .filter(entry => entry.kind === 'SG')
+    .map(sgv => ({
+      sgv,
+      timestamp: parseCareLinkSgTimestamp(
         sgv as CareLinkSG & Record<string, unknown>,
         offsetMilliseconds,
-      );
-      return {
-        type: 'sgv' as const,
-        sgv: normalizeSgToMgdl(sgv.sg, data),
-        date: timestamp,
-        dateString: timestampAsString(timestamp),
-        utcOffset: offsetMilliseconds / 60000,
-        device: deviceName(data),
-      };
-    });
+      ),
+    }));
 
-  // Apply trend data to the most recent SGV
-  if (sgvs.length > 0 && data.sgs[data.sgs.length - 1].sg !== 0) {
+  const invalidCount = parsed.filter(
+    item => item.sgv.sg !== 0 && (!Number.isFinite(item.timestamp) || item.timestamp <= 0),
+  ).length;
+  if (invalidCount > 0) {
+    logger.warn('Dropping CareLink SGVs with invalid timestamps', {
+      component: 'transform',
+      count: invalidCount,
+    });
+  }
+
+  // v13 does not guarantee chronological order. Sort before applying
+  // sgvLimit so slice(-limit) always keeps the newest readings.
+  const ordered = parsed
+    .filter(item => item.sgv.sg !== 0 && Number.isFinite(item.timestamp) && item.timestamp > 0)
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const sgvs: NightscoutSGVEntry[] = ordered.map(({ sgv, timestamp }) => ({
+    type: 'sgv' as const,
+    sgv: normalizeSgToMgdl(sgv.sg, data),
+    date: timestamp,
+    dateString: timestampAsString(timestamp),
+    utcOffset: offsetMilliseconds / 60000,
+    device: deviceName(data),
+  }));
+
+  // Apply trend only to the chronologically newest real reading. Preserve
+  // the legacy missing-reading guard where a trailing sg=0 has no timestamp.
+  const sourceWithTime = parsed
+    .filter(item => Number.isFinite(item.timestamp) && item.timestamp > 0)
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const newestSource = sourceWithTime.length > 0
+    ? sourceWithTime[sourceWithTime.length - 1]
+    : undefined;
+  const trailing = parsed[parsed.length - 1];
+  const legacyTrailingMissing = !!trailing
+    && trailing.sgv.sg === 0
+    && (!Number.isFinite(trailing.timestamp) || trailing.timestamp <= 0);
+
+  if (sgvs.length > 0 && newestSource?.sgv.sg !== 0 && !legacyTrailingMissing) {
     const trendData = CARELINK_TREND_TO_NIGHTSCOUT_TREND[data.lastSGTrend];
     if (trendData) {
       sgvs[sgvs.length - 1] = { ...sgvs[sgvs.length - 1], ...trendData };
@@ -192,7 +222,6 @@ function sgvEntries(
 
   return sgvs;
 }
-
 export function transform(data: CareLinkData, sgvLimit?: number): TransformResult {
   const recency =
     (data.currentServerTime - data.lastMedicalDeviceDataUpdateServerTime) / (60 * 1000);
