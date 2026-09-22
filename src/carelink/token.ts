@@ -146,6 +146,33 @@ export function isTokenExpired(accessToken: string): boolean {
   return payload.exp * 1000 < Date.now() + 600 * 1000;
 }
 
+function safeRefreshErrorSummary(data: unknown): string | undefined {
+  if (data == null) return undefined;
+
+  if (typeof data === 'object') {
+    const record = data as Record<string, unknown>;
+    const parts = ['error', 'error_description', 'message']
+      .filter((key) => typeof record[key] === 'string')
+      .map((key) => `${key}=${String(record[key]).replace(/\s+/g, ' ').slice(0, 180)}`);
+    if (parts.length) return parts.join('; ');
+    return 'JSON response without error/error_description/message';
+  }
+
+  if (typeof data === 'string') {
+    const text = data
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/https?:\/\/\S+/g, '[URL]')
+      .replace(/[A-Za-z0-9_-]{40,}/g, '[REDACTED]')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text ? text.slice(0, 240) : 'empty text/HTML response';
+  }
+
+  return String(data).slice(0, 180);
+}
+
 export async function refreshToken(loginData: LoginData): Promise<LoginData> {
   const refreshBefore = tokenFingerprint(loginData.refresh_token);
   logger.info('Refreshing access token...', {
@@ -153,15 +180,37 @@ export async function refreshToken(loginData: LoginData): Promise<LoginData> {
     refreshTokenFp: refreshBefore,
   });
 
-  const resp = await axios.post(
-    loginData.token_url,
-    qs.stringify({
-      grant_type: 'refresh_token',
-      client_id: loginData.client_id,
-      refresh_token: loginData.refresh_token,
-    }),
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
-  );
+  let resp;
+  try {
+    resp = await axios.post(
+      loginData.token_url,
+      qs.stringify({
+        grant_type: 'refresh_token',
+        client_id: loginData.client_id,
+        refresh_token: loginData.refresh_token,
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+    );
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      logger.error('Token refresh HTTP failure', {
+        component: 'token',
+        refreshTokenFp: refreshBefore,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        contentType: error.response?.headers?.['content-type'],
+        responseSummary: safeRefreshErrorSummary(error.response?.data),
+      });
+    } else {
+      logger.error('Token refresh non-HTTP failure', {
+        component: 'token',
+        refreshTokenFp: refreshBefore,
+        errorName: error instanceof Error ? error.name : typeof error,
+        errorMessage: error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240),
+      });
+    }
+    throw error;
+  }
 
   loginData.access_token = resp.data.access_token;
   if (resp.data.refresh_token) {
